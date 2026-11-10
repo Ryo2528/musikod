@@ -1,6 +1,6 @@
 # Musiko MP3
 
-Convert a public YouTube video to MP3 and edit its title, artist, album, and cover art. If YouTube rejects Vercel's request, the page retries once. **Use an MP3 file** lets you tag an existing MP3 in your browser without uploading the audio.
+Convert a public YouTube video to MP3 and edit its title, artist, album, and cover art. The converter retries temporary errors and can load public video details separately when extraction fails. **Use an MP3 file** lets you tag an existing MP3 in your browser without uploading the audio.
 
 ## Deploy a new copy on Vercel
 

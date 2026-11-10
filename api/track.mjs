@@ -19,6 +19,7 @@ const extractArgs = [
 ];
 const mp3Args = ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y'];
 const noStore = { 'Cache-Control': 'no-store' };
+const metadataCache = new Map();
 let active = 0;
 
 class RequestError extends Error {
@@ -51,28 +52,65 @@ function tag(value) {
   return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 180).toWellFormed() : '';
 }
 
+function toolOutput(error) {
+  return `${error.stderr || ''} ${error.stdout || ''}`;
+}
+
+function youtubeFailure(error) {
+  const detail = toolOutput(error);
+  if (/not a bot|HTTP Error 429|too many requests|rate.limit/i.test(detail)) return 'blocked';
+  if (/HTTP Error 403/i.test(detail)) return 'forbidden';
+  if (/HTTP Error (500|502|503|504)|temporary failure|connection (?:reset|refused)/i.test(detail)) return 'temporary';
+  return null;
+}
+
 function errorMessage(error) {
-  const detail = `${error.stderr || ''} ${error.stdout || ''}`;
+  const detail = toolOutput(error);
   if (error.code === 'ENOENT' || error.code === 'EACCES') return 'The converter tools are unavailable. Check the Vercel build logs.';
   if (error.killed) return 'The conversion timed out. Try a shorter video.';
   if (/not pass filter|larger than max-filesize/i.test(detail)) return 'Choose a public, finished video up to 20 minutes long.';
-  if (/sign in|confirm you.re not a bot|HTTP Error (403|429)/i.test(detail)) return 'YouTube rejected the download request from this server. Try again later or use the local version.';
-  if (/private video|video (?:is )?unavailable|not available|members.only|age.restricted/i.test(detail)) return 'This video is unavailable. Try a public video that plays without signing in.';
+  if (/private video|video (?:is )?unavailable|not available|members.only|age.restricted|confirm your age/i.test(detail)) return 'This video is unavailable. Try a public video that plays without signing in.';
   return 'Could not process this video. Try another public YouTube link.';
 }
 
+async function lookupPublicDetails(id, signal) {
+  const endpoint = new URL('https://www.youtube.com/oembed');
+  endpoint.search = new URLSearchParams({ url: videoUrl(id), format: 'json' });
+  const response = await fetch(endpoint, {
+    redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(7000)])
+  });
+  if (!response.ok || !response.body) return null;
+  const info = JSON.parse((await readLimited(response.body, 32_768)).toString('utf8'));
+  const title = tag(info.title);
+  if (!title) return null;
+  return { title, artist: tag(info.author_name), album: '', duration: null, cover: thumbnailUrl(id), metadataOnly: true };
+}
+
 async function inspect(id, signal) {
-  const { stdout } = await exec(ytDlp, [...extractArgs, '--skip-download', '--print',
-    '%(.{track,title,artist,uploader,channel,album,duration,is_live})j', '--', videoUrl(id)],
-  { timeout: 40_000, signal, windowsHide: true });
+  const cached = metadataCache.get(id);
+  if (cached?.expires > Date.now()) return cached.track;
+  let stdout;
+  try {
+    ({ stdout } = await exec(ytDlp, [...extractArgs, '--skip-download', '--print',
+      '%(.{track,title,artist,uploader,channel,album,duration,is_live})j', '--', videoUrl(id)],
+    { timeout: 40_000, signal, windowsHide: true }));
+  } catch (error) {
+    if (!youtubeFailure(error)) throw error;
+    const details = await lookupPublicDetails(id, signal).catch(() => null);
+    if (details) return details;
+    throw error;
+  }
   const info = JSON.parse(stdout);
   if (info.is_live || !(info.duration > 0 && info.duration <= downloadLimit)) {
     throw new RequestError(400, 'Choose a public, finished video up to 20 minutes long.');
   }
-  return {
+  const track = {
     title: tag(info.track || info.title), artist: tag(info.artist || info.uploader || info.channel),
     album: tag(info.album), duration: info.duration, cover: thumbnailUrl(id)
   };
+  if (metadataCache.size >= 128) metadataCache.delete(metadataCache.keys().next().value);
+  metadataCache.set(id, { track, expires: Date.now() + 5 * 60_000 });
+  return track;
 }
 
 async function readLimited(stream, limit) {
@@ -134,16 +172,31 @@ function removeDir(dir) {
   return rm(dir, { recursive: true, force: true }).catch(error => console.error('Temporary file cleanup:', error.message));
 }
 
+async function downloadAudio(dir, id, signal) {
+  const args = [...extractArgs, '--break-match-filters', downloadFilter, '--max-filesize', '60M',
+    '-f', 'bestaudio[protocol=https]/bestaudio', '--fixup', 'never'];
+  const deadline = Date.now() + 105_000;
+  let prefix = 'source';
+  try {
+    await exec(ytDlp, [...args, '-o', `${prefix}.%(ext)s`, '--', videoUrl(id)],
+      { cwd: dir, timeout: 105_000, signal, windowsHide: true });
+  } catch (error) {
+    const remaining = deadline - Date.now();
+    if (youtubeFailure(error) !== 'forbidden' || remaining < 8_000 || signal.aborted) throw error;
+    prefix = 'retry';
+    await exec(ytDlp, [...args, '--force-ipv4', '-o', `${prefix}.%(ext)s`, '--', videoUrl(id)],
+      { cwd: dir, timeout: remaining, signal, windowsHide: true });
+  }
+  return (await readdir(dir)).find(name => name.startsWith(`${prefix}.`) && /\.(?:m4a|mp4|webm|ogg|opus|aac|mp3)$/.test(name));
+}
+
 async function convert(id, data, signal) {
   const title = tag(data.title);
   if (!title) throw new RequestError(400, 'Enter a track title.');
   let dir = await mkdtemp(join(tmpdir(), 'musiko-vercel-'));
   try {
     const cover = await prepareCover(dir, id, data, signal);
-    await exec(ytDlp, [...extractArgs, '--break-match-filters', downloadFilter, '--max-filesize', '60M',
-      '-f', 'bestaudio[protocol=https]/bestaudio', '--fixup', 'never', '-o', 'source.%(ext)s', '--', videoUrl(id)],
-    { cwd: dir, timeout: 115_000, signal, windowsHide: true });
-    const source = (await readdir(dir)).find(name => /^source\.(?:m4a|mp4|webm|ogg|opus|aac|mp3)$/.test(name));
+    const source = await downloadAudio(dir, id, signal);
     if (!source) throw new RequestError(422, 'No downloadable audio was found within the 60 MB source limit.');
     const args = [...mp3Args, '-i', source];
     if (cover) args.push('-i', 'cover.jpg');
@@ -194,6 +247,13 @@ export default {
     } catch (error) {
       if (error instanceof RequestError) return Response.json({ error: error.message }, { status: error.status, headers: noStore });
       console.error('Conversion failed:', String(error.stderr || error.message).slice(0, 500));
+      const failure = youtubeFailure(error);
+      if (failure === 'blocked' || failure === 'forbidden') {
+        return Response.json({ code: 'YOUTUBE_REJECTED', error: 'YouTube is blocking direct conversion from this server. You can still tag an MP3 under “Use an MP3 file.”' }, { status: 502, headers: noStore });
+      }
+      if (failure === 'temporary') {
+        return Response.json({ code: 'YOUTUBE_TEMPORARY', error: 'YouTube did not respond. Try again or choose an MP3 file.' }, { status: 502, headers: noStore });
+      }
       return Response.json({ error: errorMessage(error) }, { status: 502, headers: noStore });
     }
   }

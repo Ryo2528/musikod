@@ -52,7 +52,9 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--pink); outl
 .status.error { color: #ff9db5; }
 .file-mode { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .file-mode summary { cursor: pointer; font-size: 14px; font-weight: 650; }
-.file-mode a { display: inline-block; color: var(--pink); margin: 10px 0 12px; font-size: 13px; }
+.file-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 10px 0 12px; font-size: 13px; }
+.file-actions a { color: var(--pink); }
+.file-actions button { border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; background: #292130; color: inherit; cursor: pointer; }
 .file-mode input { display: block; width: 100%; margin-top: 6px; font-size: 13px; }
 fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 fieldset:disabled .cover-row, fieldset:disabled .tag, fieldset:disabled .tag-pair { opacity: .65; }

@@ -1,0 +1,3 @@
+bin/
+.vercel/
+node_modules/

@@ -47,7 +47,10 @@
         <details id="file-mode" class="file-mode">
           <summary>Use an MP3 file</summary>
           <p class="hint">If direct conversion fails, download an MP3 from a source you have permission to use, then select it here to edit its tags. The file stays in your browser.</p>
-          <a href="https://mp3cow.com/" target="_blank" rel="noopener noreferrer">Open MP3Cow in a new tab</a>
+          <div class="file-actions">
+            <button type="button" id="copy-video-link">Copy video link</button>
+            <a href="https://mp3cow.com/" target="_blank" rel="noopener noreferrer">Open MP3Cow ↗</a>
+          </div>
           <label for="source-file">Choose MP3</label>
           <input id="source-file" type="file" accept=".mp3,audio/mpeg">
           <p class="status" id="file-status" role="status"></p>

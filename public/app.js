@@ -16,6 +16,7 @@ const artwork = document.querySelector('#artwork');
 const coverFile = document.querySelector('#cover-file');
 const includeCover = document.querySelector('#include-cover');
 const fileMode = document.querySelector('#file-mode');
+const copyLink = document.querySelector('#copy-video-link');
 const sourceFile = document.querySelector('#source-file');
 const fileStatus = document.querySelector('#file-status');
 let track;
@@ -42,13 +43,11 @@ async function post(payload, statusElement) {
     });
     if (response.ok) return response;
     const body = await response.json().catch(() => ({}));
-    const rejected = response.status === 502 && body.error?.startsWith('YouTube rejected');
-    if (rejected && attempt === 0) {
-      status(statusElement, 'YouTube rejected the request. Retrying once…');
+    if (response.status === 502 && body.code === 'YOUTUBE_TEMPORARY' && attempt === 0) {
+      status(statusElement, 'YouTube did not respond. Retrying once…');
       await new Promise(resolve => setTimeout(resolve, 1500));
       continue;
     }
-    if (rejected) throw new Error('YouTube is blocking direct conversion right now. You can still tag an MP3 under “Use an MP3 file.”');
     throw new Error(body.error || 'The converter could not complete the request.');
   }
 }
@@ -90,7 +89,10 @@ prepareForm.addEventListener('submit', async event => {
     const response = await post({ action: 'inspect', url }, prepareStatus);
     track = { ...await response.json(), url };
     showTrack();
-    status(prepareStatus, 'Track ready. Review the details before downloading.');
+    if (track.metadataOnly) fileMode.open = true;
+    status(prepareStatus, track.metadataOnly
+      ? 'Title and artwork loaded. You can try the direct download or tag an MP3 you already have.'
+      : 'Track ready. Review the details before downloading.');
     status(exportStatus, 'Your edits will be saved inside the MP3.');
     title.focus();
   } catch (error) {
@@ -99,6 +101,17 @@ prepareForm.addEventListener('submit', async event => {
     status(exportStatus, 'Prepare a video or choose an MP3 file to edit its tags.');
   } finally {
     setBusy(false);
+  }
+});
+
+copyLink.addEventListener('click', async () => {
+  const url = urlField.value.trim();
+  if (!url) return status(fileStatus, 'Paste a YouTube link above first.', true);
+  try {
+    await navigator.clipboard.writeText(url);
+    status(fileStatus, 'Link copied. Paste it into your download source.');
+  } catch {
+    status(fileStatus, 'Select and copy the link from the YouTube field above.', true);
   }
 });
 
